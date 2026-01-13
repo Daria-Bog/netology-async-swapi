@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: swapi_db
+    restart: always
+    environment:
+      POSTGRES_USER: netology_user
+      POSTGRES_PASSWORD: netology_password
+      POSTGRES_DB: swapi
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netology_user -d swapi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
