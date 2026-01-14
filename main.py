@@ -2,38 +2,75 @@ import asyncio
 import aiohttp
 from more_itertools import chunked
 from models import Character, Session, init_db, engine
+from tenacity import retry, stop_after_attempt, wait_fixed
 
-# Константы для настройки выгрузки
 MAX_CHARACTERS = 100
 CHUNK_SIZE = 10
 
 
-async def get_person(person_id, session):
-    """Выгрузка данных одного персонажа из API."""
-    url = f"https://www.swapi.tech/api/people/{person_id}"
+# Декоратор для повторных попыток при сбое сети
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+async def fetch_json(url, session):
     async with session.get(url) as response:
-        if response.status != 200:
-            return None
-        data = await response.json()
-        if "result" not in data:
-            return None
+        if response.status == 200:
+            return await response.json()
+        return None
 
-        props = data["result"]["properties"]
-        return {
-            "id": int(data["result"]["uid"]),
-            "name": props.get("name"),
-            "birth_year": props.get("birth_year"),
-            "eye_color": props.get("eye_color"),
-            "gender": props.get("gender"),
-            "hair_color": props.get("hair_color"),
-            "homeworld": props.get("homeworld"),
-            "mass": props.get("mass"),
-            "skin_color": props.get("skin_color"),
-        }
+
+async def get_resource_titles(urls, session, field_name="name"):
+    """Получает названия ресурсов (фильмов, кораблей и т.д.) по списку URL."""
+    if not urls:
+        return ""
+    if isinstance(urls, str):  # Для homeworld, где только один URL
+        urls = [urls]
+
+    tasks = [fetch_json(url, session) for url in urls]
+    results = await asyncio.gather(*tasks)
+
+    titles = []
+    for res in results:
+        if res and "result" in res:
+            # В SWAPI названия лежат либо в "name", либо в "title" (для фильмов)
+            props = res["result"]["properties"]
+            titles.append(props.get("name") or props.get("title"))
+
+    return ", ".join(filter(None, titles))
+
+
+async def get_person(person_id, session):
+    url = f"https://www.swapi.tech/api/people/{person_id}"
+    data = await fetch_json(url, session)
+
+    if not data or "result" not in data:
+        return None
+
+    props = data["result"]["properties"]
+
+    # Собираем данные и сразу запрашиваем названия вместо ссылок
+    homeworld_title = await get_resource_titles(props.get("homeworld"), session)
+    films_titles = await get_resource_titles(props.get("films"), session, "title")
+    species_titles = await get_resource_titles(props.get("species"), session)
+    starships_titles = await get_resource_titles(props.get("starships"), session)
+    vehicles_titles = await get_resource_titles(props.get("vehicles"), session)
+
+    return {
+        "id": int(data["result"]["uid"]),
+        "name": props.get("name"),
+        "birth_year": props.get("birth_year"),
+        "eye_color": props.get("eye_color"),
+        "gender": props.get("gender"),
+        "hair_color": props.get("hair_color"),
+        "homeworld": homeworld_title,
+        "mass": props.get("mass"),
+        "skin_color": props.get("skin_color"),
+        "films": films_titles,
+        "species": species_titles,
+        "starships": starships_titles,
+        "vehicles": vehicles_titles,
+    }
 
 
 async def insert_to_db(characters_data):
-    """Асинхронное сохранение пачки персонажей в базу данных."""
     async with Session() as session:
         objects = [Character(**item) for item in characters_data if item]
         session.add_all(objects)
@@ -42,29 +79,25 @@ async def insert_to_db(characters_data):
 
 
 async def main():
-    # Инициализация таблиц в БД
     await init_db()
+    db_tasks = []  # Список для контроля задач БД
 
     async with aiohttp.ClientSession() as http_session:
-        # Разбиваем диапазон ID на чанки для параллельных запросов
         for char_ids_chunk in chunked(range(1, MAX_CHARACTERS + 1), CHUNK_SIZE):
             tasks = [get_person(cid, http_session) for cid in char_ids_chunk]
             results = await asyncio.gather(*tasks)
-
-            # Фильтруем пустые результаты (если персонаж с таким ID не найден)
             valid_results = [r for r in results if r]
 
             if valid_results:
-                # Запускаем запись в БД как фоновую задачу
-                asyncio.create_task(insert_to_db(valid_results))
+                task = asyncio.create_task(insert_to_db(valid_results))
+                db_tasks.append(task)
 
-    # Ждем завершения всех запущенных задач insert_to_db перед закрытием
-    all_tasks = asyncio.all_tasks() - {asyncio.current_task()}
-    await asyncio.gather(*all_tasks)
+    # Ждем только наши задачи по записи в БД
+    if db_tasks:
+        await asyncio.gather(*db_tasks)
 
-    # Закрываем соединение с движком БД
     await engine.dispose()
-    print("Выгрузка успешно завершена!")
+    print("Выгрузка завершена успешно!")
 
 
 if __name__ == "__main__":

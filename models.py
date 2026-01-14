@@ -1,16 +1,16 @@
-import os
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Integer
+from sqlalchemy import String, Integer, Text
 
-# Данные для подключения
 PG_DSN = "postgresql+asyncpg://netology_user:netology_password@localhost:5432/swapi"
 
 engine = create_async_engine(PG_DSN)
 Session = async_sessionmaker(bind=engine, expire_on_commit=False)
 
+
 class Base(AsyncAttrs, DeclarativeBase):
     pass
+
 
 class Character(Base):
     __tablename__ = "swapi_characters"
@@ -25,8 +25,14 @@ class Character(Base):
     mass: Mapped[str] = mapped_column(String(50), nullable=True)
     skin_color: Mapped[str] = mapped_column(String(50), nullable=True)
 
+    # Новые поля (используем Text, так как список названий может быть длинным)
+    films: Mapped[str] = mapped_column(Text, nullable=True)
+    species: Mapped[str] = mapped_column(Text, nullable=True)
+    starships: Mapped[str] = mapped_column(Text, nullable=True)
+    vehicles: Mapped[str] = mapped_column(Text, nullable=True)
+
+
 async def init_db():
     async with engine.begin() as conn:
-        # Для учебной задачи: сбрасываем и создаем таблицы заново
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
